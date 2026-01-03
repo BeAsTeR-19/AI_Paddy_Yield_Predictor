@@ -1,97 +1,111 @@
 import streamlit as st
 import os
-import pandas as pd
 from google import genai
-from google.api_core import exceptions
 from dotenv import load_dotenv
-from style_utils import apply_agri_theme
 
-# --- INITIALIZATION ---
+# --- 1. INITIALIZATION ---
 load_dotenv()
-apply_agri_theme()  # Apply our modern UI
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Automatically switches between local .env and Streamlit Cloud Secrets
+API_KEY = os.getenv("GEMINI_API_KEY") or st.secrets.get("GEMINI_API_KEY")
+client = genai.Client(api_key=API_KEY)
 
-# --- DATA ---
-LOCATION = {
-    "Sanischare": {"lat": 26.6853, "lon": 87.9944},
-    "Jalthal": {"lat": 26.5458, "lon": 88.0253},
-    "Budhabare": {"lat": 26.7328, "lon": 88.0414},
-    "Dhaijan": {"lat": 26.6575, "lon": 88.0833},
-}
-
-CONTENT = {
-    "English": {
-        "title": "🌾 Jhapa Paddy Yield Advisor",
-        "sidebar_header": "Field Parameters",
-        "predict_btn": "Analyze Advice",
-        "result_label": "Predicted Yield",
-        "lang_code": "en"
-    },
-    "Nepali": {
-        "title": "🌾 झापा धान उत्पादन सल्लाहकार",
-        "sidebar_header": "खेतको विवरण",
-        "predict_btn": "विश्लेषण गर्नुहोस्",
-        "result_label": "अनुमानित उत्पादन",
-        "lang_code": "ne"
-    }
-}
-
-# --- FUNCTIONS ---
-def get_ai_advice(prompt):
-    """
-    Fetches advice from Gemini AI.
-    Returns a tuple: (advice_text, is_live_status)
-    """
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
-        )
-        return response.text, True
-    except Exception:
-        fallback = "The system is busy right now. Note: Rice needs steady water during the flowering stage."
-        return fallback, False
-
-# --- APP FLOW ---
+# Initialize Session State for language selection
 if 'lang' not in st.session_state:
     st.session_state.lang = None
 
-if st.session_state.lang is None:
-    st.title("🌾Paddy yields🌾")
-    col1, col2 = st.columns(2)
-    if col1.button("English"):
-        st.session_state.lang = "English"; st.rerun()
-    if col2.button("नेपाली"):
-        st.session_state.lang = "Nepali"; st.rerun()
 
+# --- 2. YOUR ORIGINAL CODE (THE "SAFETY NET") ---
+# This ensures the app always works, even on "unbuilt roads" or busy servers.
+def get_local_expert_advice(ward, soil, rainfall, lang):
+    # Your original yield calculation
+    yield_estimate = 3100 + (rainfall * 0.75) + (200 if "Clay" in soil else 0)
+
+    if lang == "Nepali":
+        advice = f"**झापा स्थानीय विशेषज्ञ सल्लाह ({ward}):**\n"
+        if rainfall > 2200:
+            advice += "- धेरै वर्षा हुने सम्भावना छ, निकासको व्यवस्था मिलाउनुहोस्।"
+        else:
+            advice += "- सिँचाइको उचित व्यवस्था गर्नुहोस्।"
+    else:
+        advice = f"**Local Expert Advice ({ward}):**\n"
+        if rainfall > 2200:
+            advice += "- High rainfall expected. Ensure proper field drainage."
+        else:
+            advice += "- Moderate rainfall. Monitor irrigation during flowering."
+
+    return int(yield_estimate), advice
+
+
+# --- 3. THE HYBRID AI CONTROLLER ---
+def get_final_results(ward, soil, rainfall, lang):
+    """Tries AI first. If it's busy or offline, triggers your original code."""
+    try:
+        # Send to Gemini 1.5 Flash-8B (Highest free tier limits)
+        prompt = f"Rice advice for {ward}, Jhapa. Soil: {soil}, Rain: {rainfall}mm. {lang} only."
+        response = client.models.generate_content(
+            model="gemini-1.5-flash-8b",
+            contents=prompt
+        )
+        # Success path: Use AI text but keep your trusted math for yield
+        yield_val = 3100 + (rainfall * 0.78) + (200 if "Clay" in soil else 0)
+        return int(yield_val), response.text, "LIVE AI"
+
+    except Exception:
+        # Failure path: Instantly run your manual code (User never sees an error)
+        y, a = get_local_expert_advice(ward, soil, rainfall, lang)
+        return y, a, "LOCAL MODE"
+
+
+# --- 4. THE USER INTERFACE ---
+# PART A: THE LANGUAGE START-SCREEN
+if st.session_state.lang is None:
+    st.set_page_config(page_title="Jhapa Paddy Advisor", page_icon="🌾")
+    st.title("🌾 Jhapa Paddy Advisor")
+    st.subheader("Choose Language / भाषा छान्नुहोस्")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("English", use_container_width=True):
+            st.session_state.lang = "English"
+            st.rerun()
+    with col2:
+        if st.button("नेपाली", use_container_width=True):
+            st.session_state.lang = "Nepali"
+            st.rerun()
+
+# PART B: THE MAIN ADVISOR (Shows only after selection)
 else:
-    L = CONTENT[st.session_state.lang]
-    st.title(L["title"])
+    # Set titles based on language
+    title_text = "🌾 Jhapa Paddy Advisor" if st.session_state.lang == "English" else "🌾 झापा धान सल्लाहकार"
+    st.title(title_text)
 
     with st.sidebar:
-        st.header(L["sidebar_header"])
-        ward = st.selectbox("Select location", list(LOCATION.keys()))
-        soil = st.selectbox("Soil Type", ["Clay Loam: चिप्याइलो दोमट माटो", "Sandy Loam: बलौटे दोमट माटो", "Loam: दोमट माटो"])
+        if st.button("Change Language / भाषा फेर्नुहोस्"):
+            st.session_state.lang = None
+            st.rerun()
+
+        st.header("Settings" if st.session_state.lang == "English" else "सेटिङ")
+        ward = st.selectbox("Ward/Location", ["Sanischare", "Jalthal", "Budhabare", "Dhaijan"])
+        soil = st.selectbox("Soil Type", ["Clay Loam", "Sandy Loam", "Loam"])
         rainfall = st.slider("Rainfall (mm)", 1500, 3000, 2100)
-        st.map(pd.DataFrame([LOCATION[ward]]), zoom=12)
 
-        if st.button("Change Language / भाषा बदल्नुहोस्"):
-            st.session_state.lang = None; st.rerun()
+    # Trigger calculation
+    btn_text = "Analyze Results" if st.session_state.lang == "English" else "विश्लेषण गर्नुहोस्"
+    if st.button(btn_text):
+        with st.spinner("Processing..." if st.session_state.lang == "English" else "प्रक्रिया हुँदैछ..."):
+            f_yield, f_advice, mode = get_final_results(ward, soil, rainfall, st.session_state.lang)
 
-    if st.button(L["predict_btn"]):
-        yield_pred = 3100 + (rainfall * 0.78) + (200 if "Clay" in soil else 0)
-        st.metric(L["result_label"], f"{int(yield_pred)} kg/ha")
+            # Display Metric
+            y_label = "Estimated Yield" if st.session_state.lang == "English" else "अनुमानित उत्पादन"
+            st.metric(y_label, f"{f_yield} kg/ha")
 
-        with st.spinner("AI Generating Recommendation..."):
-            prompt = f"Advice for {ward}, Jhapa. Soil: {soil}, Rain: {rainfall}mm. {st.session_state.lang} only."
-            advice, is_live = get_ai_advice(prompt)
-
-            if is_live:
-                st.markdown("🟢 **System Status:** Live AI Intelligence")
-                st.info(advice)
+            # System Status Indicator
+            if mode == "LIVE AI":
+                st.success("🟢 Connected to AI" if st.session_state.lang == "English" else "🟢 एआई जडान भयो")
             else:
-                st.markdown("🟠 **System Status:** Local Knowledge Mode (Offline/Busy)")
-                st.warning(advice)
+                st.warning("🟠 Offline/Busy Mode" if st.session_state.lang == "English" else "🟠 अफलाइन मोड सक्रिय")
+
+            st.info(f_advice)
 
 st.divider()
-st.caption("| Prototype 2026 | Built by Ujjwal Dhungana |")
+st.caption("Prototype Jan 2026| Developed by Ujjwal Dhungana| Powered by:gemini-1.5-flash-8b |")
